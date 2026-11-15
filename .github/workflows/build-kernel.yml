@@ -1,0 +1,49 @@
+name: Build m79 kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install cross toolchain (gcc 4.9.4)
+        run: |
+          set -e
+          cd /opt
+          # Linaro gcc 4.9.4 arm-linux-gnueabi (close to the 2015 build env)
+          wget -q https://releases.linaro.org/components/toolchain/binaries/4.9-2017.01/arm-linux-gnueabi/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabi.tar.xz
+          tar xf gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabi.tar.xz
+          echo "/opt/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabi/bin" >> $GITHUB_PATH
+
+      - name: Verify toolchain
+        run: |
+          arm-linux-gnueabi-gcc --version | head -1
+          which arm-linux-gnueabi-gcc
+
+      - name: Build kernel (m79)
+        run: |
+          set -e
+          ./build.sh m79
+
+      - name: Collect artifacts
+        run: |
+          set -e
+          mkdir -p artifacts
+          find . -name "kernel_m79.bin" -exec cp {} artifacts/ \; 2>/dev/null || true
+          find . -name "zImage" -path "*m79*" -exec cp {} artifacts/ \; 2>/dev/null || true
+          find . -path "*/arch/arm/boot/zImage" -exec cp {} artifacts/zImage \;
+          find . -path "*/arch/arm/boot/Image" -exec cp {} artifacts/Image \; 2>/dev/null || true
+          ls -la artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: m79-kernel
+          path: artifacts/
+          retention-days: 30
