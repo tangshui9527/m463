@@ -73,13 +73,9 @@ static void strip(char *str)
 
 static void check_stdin(void)
 {
-	if (!valid_stdin) {
-		printf(_("aborted!\n\n"));
-		printf(_("Console input/output is redirected. "));
-		printf(_("Run 'make oldconfig' to update configuration.\n\n"));
-		exit(1);
-	}
+	/* Allow non-interactive automated builds (e.g. CI/CD) to use defaults */
 }
+
 
 static int conf_askvalue(struct symbol *sym, const char *def)
 {
