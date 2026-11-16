@@ -5,8 +5,9 @@ _p="m71"
 
 echo Building $_p kernel ...
 
-# add cross-compiler toolchina path
-export PATH=/meizuosc/toolchain/gcc-linaro-arm-linux-gnueabi-4.6.3/bin:$PATH
+# add cross-compiler toolchina path if present
+[ -d /meizuosc/toolchain/gcc-linaro-arm-linux-gnueabi-4.6.3/bin ] && export PATH=/meizuosc/toolchain/gcc-linaro-arm-linux-gnueabi-4.6.3/bin:$PATH
+
 
 CUR_MODULE=kernel make -f mediatek/build/makemtk.mk check-dep CMD_ARGU="ENABLE_TEE=TRUE PROJECT=$_p FLAVOR= MKTOPDIR=$(pwd) PRODUCT=" ENABLE_TEE=TRUE PROJECT=$_p FLAVOR= MKTOPDIR=$(pwd) PRODUCT= CROSS_COMPILE=arm-linux-gnueabi-
 
