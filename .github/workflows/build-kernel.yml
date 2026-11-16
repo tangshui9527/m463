@@ -29,12 +29,21 @@ jobs:
             lzop \
             u-boot-tools \
             python2 \
+            libmpfr-dev \
+            libmpfr6 \
             libc6:i386 \
             libstdc++6:i386 \
             zlib1g:i386
           # Ensure python points to python2 for MTK legacy scripts
           sudo ln -sf /usr/bin/python2 /usr/bin/python
           python --version
+          # Fix libmpfr.so.4 for gcc 4.9.4 crosstool
+          MPFR_LIB=$(find /usr/lib -name "libmpfr.so.*" | head -1)
+          if [ -n "$MPFR_LIB" ]; then
+            sudo ln -sf "$MPFR_LIB" /usr/lib/x86_64-linux-gnu/libmpfr.so.4
+            sudo ln -sf "$MPFR_LIB" /usr/lib/libmpfr.so.4
+          fi
+          sudo ldconfig
           # Ensure build tools are executable
           chmod -R +x mediatek/build/tools || true
 
@@ -54,6 +63,8 @@ jobs:
       - name: Build kernel (m79)
         run: |
           set -e
+          export HOSTCFLAGS="-fcommon"
+          export HOSTCXXFLAGS="-fcommon"
           ./build.sh m79
 
       - name: Collect artifacts
