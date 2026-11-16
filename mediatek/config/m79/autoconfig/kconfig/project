@@ -203,10 +203,11 @@ CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y
 CONFIG_FONTS=y
 CONFIG_FONT_8x16=y
 
+# TuxOnIce (avoid interactive prompt when VT is enabled)
+# CONFIG_TOI_USERUI is not set
+
 # Devtmpfs for userspace /dev automatic node creation
 CONFIG_DEVTMPFS=y
 CONFIG_DEVTMPFS_MOUNT=y
 
-# Allow extending CMDLINE
-CONFIG_CMDLINE_EXTEND=y
 
