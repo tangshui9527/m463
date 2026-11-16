@@ -1,0 +1,11 @@
+# Ignore large partition images and temporary build artifacts
+build/
+*.img
+!lk-stock.img
+!lk-patched-v2.img
+!seccfg-read-20261116.img
+*.bin
+*.cpio.gz
+__pycache__/
+gen_init_cpio
+stock_ramdisk_extracted/

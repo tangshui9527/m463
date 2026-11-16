@@ -1,0 +1,104 @@
+#!/bin/busybox sh
+# ============================================================
+# 魅蓝1(M79) 启动 initramfs 的 init
+#  1) 挂 /proc /sys，用 mdev 造设备节点（内核没编 devtmpfs）
+#  2) 打开 USB CDC-ACM 串口控制台（Mac 上是 /dev/tty.usbmodem*）
+#  3) 找带 /etc/wbm1-release 标记的 ext4 分区当根，switch_root 到 Debian
+#  4) 找不到就掉进救援 shell，不死机不黑屏
+# ============================================================
+BB=/bin/busybox
+PATH=/bin:/sbin
+export PATH
+
+say() { echo "[initramfs] $*"; echo "[initramfs] $*" > /dev/console; }
+
+$BB mount -t proc proc /proc
+$BB mount -t sysfs sysfs /sys
+mkdir -p /dev /proc /sys /newroot
+$BB mknod -m 600 /dev/console c 5 1 2>/dev/null
+$BB mknod -m 666 /dev/null    c 1 3 2>/dev/null
+$BB mknod -m 666 /dev/zero    c 1 5 2>/dev/null
+$BB mknod -m 666 /dev/tty     c 5 0 2>/dev/null
+$BB mknod -m 666 /dev/random  c 1 8 2>/dev/null
+$BB mknod -m 666 /dev/urandom c 1 9 2>/dev/null
+$BB mdev -s
+
+# ---------- USB 串口控制台 ----------
+usb_console() {
+    A=/sys/class/android_usb/android0
+    [ -d "$A" ] || { say "没有 /sys/class/android_usb/android0（gadget 没起）"; return 1; }
+    echo 0        > "$A/enable"     2>/dev/null
+    echo 18d1     > "$A/idVendor"   2>/dev/null
+    echo d00d     > "$A/idProduct"  2>/dev/null
+    echo "wb-m1"  > "$A/iManufacturer" 2>/dev/null
+    echo "Meizu M1 Debian" > "$A/iProduct" 2>/dev/null
+    echo "acm"    > "$A/functions"  2>/dev/null
+    echo 1        > "$A/enable"     2>/dev/null
+    n=0
+    while [ $n -lt 30 ]; do
+        i=0
+        while [ $i -lt 4 ]; do
+            D=/sys/class/tty/ttyGS$i/dev
+            if [ -f "$D" ]; then
+                MM=$($BB cat "$D"); MAJ=${MM%%:*}; MIN=${MM##*:}
+                [ -e /dev/ttyGS$i ] || $BB mknod -m 666 /dev/ttyGS$i c "$MAJ" "$MIN"
+            fi
+            i=$((i+1))
+        done
+        [ -e /dev/ttyGS0 ] && return 0
+        n=$((n+1)); $BB sleep 0.2
+    done
+    return 1
+}
+
+if usb_console; then
+    say "USB 串口控制台就绪: /dev/ttyGS0"
+else
+    say "USB 串口控制台失败，继续找根文件系统"
+fi
+
+# 救援 shell：rootfs 挂不上时还能登录进去查
+rescue() {
+    say "进入救援 shell（ttyGS0）"
+    while true; do
+        [ -e /dev/ttyGS0 ] && $BB setsid $BB sh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1
+        $BB sleep 2
+    done &
+}
+
+# ---------- 找根文件系统 ----------
+find_root() {
+    for p in /dev/mmcblk0p* /dev/mmcblk1p*; do
+        [ -b "$p" ] || continue
+        if $BB mount -t ext4 -o ro "$p" /newroot 2>/dev/null; then
+            if [ -f /newroot/etc/wbm1-release ]; then
+                say "根文件系统: $p"
+                return 0
+            fi
+            $BB umount /newroot
+        fi
+    done
+    return 1
+}
+
+tries=0
+while [ $tries -lt 10 ]; do
+    if find_root; then break; fi
+    tries=$((tries+1))
+    say "第 $tries 次没找到根文件系统，等 eMMC 就绪…"
+    $BB sleep 1
+done
+
+if [ ! -f /newroot/etc/wbm1-release ]; then
+    say "!! 找不到带 wbm1-release 标记的分区 —— 根文件系统没刷进去？"
+    rescue
+    exit 1
+fi
+
+say "切根到 Debian…"
+$BB mount -o remount,rw /newroot 2>/dev/null
+mkdir -p /newroot/dev /newroot/proc /newroot/sys /newroot/run /newroot/tmp
+$BB mount --move /proc /newroot/proc
+$BB mount --move /sys  /newroot/sys
+$BB mount --move /dev  /newroot/dev
+exec $BB switch_root /newroot /sbin/init
