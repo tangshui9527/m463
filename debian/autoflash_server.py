@@ -21,35 +21,20 @@ SUBSCRIBERS = set()
 LOCK = threading.Lock()
 
 TARGETS = {
-    "probe_loop": {
-        "name": "🚀 v8.5 探针: 无devmem版 (原厂内核+早期串口+panic循环)",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-v8.img;reset"',
-        "desc": "修复版: 不含devmem(RGU访问会挂死内核)。刷完观察自动重启/挂死行为, 串口(如已接)看心跳"
+    "flash_boot_oneshot": {
+        "name": "🚀 刷入一次性 boot (Debian 直接启动版, 约1秒)",
+        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-oneshot.img;reset"',
+        "desc": "只刷 boot 分区(一次性 Debian 启动镜像)。userdata 的 Debian 已刷好。复位后自动启动 Debian, /dev/ttyACM0 登录(root/m79root)"
     },
-    "read_cache": {
-        "name": "📋 读取 cache 分区 (黑匣子数据回读, 只读112MB约15秒)",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py r cache cache-dump.img 2>&1 | tail -2',
-        "desc": "只读操作: 把 cache 分区(黑匣子写入的诊断数据)原样读回电脑, 不刷写任何东西"
-    },
-    "test_exit": {
-        "name": "🧪 第一步: 退出测试镜像 (10分钟回答: 刷写管线是否通)",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-testexit.img;reset"',
-        "desc": "PID1立即退出→panic→5秒重启循环。若循环出现=LK加载/cpio解包/init执行全通; 不循环=ramdisk层问题"
-    },
-    "v10_blackbox": {
-        "name": "🚀 第二步: 黑匣子探针 (诊断写cache分区 + ACM shell + 60秒自动关机)",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-v10.img;reset"',
-        "desc": "/init为PID1全流程: 诊断写cache分区(机主mtkclient回读) + ACM shell + 60秒自动关机。cache按PARTNAME确认, 绝不误写"
-    },
-    "dump_console_plain": {
-        "name": "📋 数据窗口收割: 每轮循环的 BROM 窗口自动抓 ram_console",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py da peek 0x43F00000 0x10000 --filename /tmp/ram_console_dump.bin 2>&1 | tail -1',
-        "desc": "v2 panic循环每5秒产生一个BROM窗口, 本目标在每个窗口自动读取64KB console(panic原文在内)"
+    "oneshot_debian": {
+        "name": "🎯 一次性刷入 Debian (userdata+boot, 约2分钟, 刷完自动进系统)",
+        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w userdata linuxroot.img; w boot boot-linux-oneshot.img;reset"',
+        "desc": "一次会话刷两个镜像: Debian rootfs→userdata + 探针→boot, 复位后自动启动Debian, /dev/ttyACM0 登录(root/m79root)"
     },
     "forensic_idle": {
         "name": "🔒 待机: 只显示 USB 模式, 不自动刷机",
         "cmd": 'sleep 3600',
-        "desc": "监控模式: 不占用 USB, 不刷写任何分区。要刷机请点击其他目标"
+        "desc": "监控模式: 不占用 USB, 不刷写任何分区"
     },
     "restore_stock": {
         "name": "🛡️ 救砖回滚: 彻底恢复原厂 Flyme 官方系统",
@@ -58,7 +43,7 @@ TARGETS = {
     }
 }
 
-CURRENT_TARGET = "linux_v2_reboot"
+CURRENT_TARGET = "flash_boot_oneshot"
 CURRENT_PROC = None
 RELOAD_EVENT = threading.Event()
 

@@ -1,0 +1,84 @@
+#!/bin/busybox sh
+# M463(魅蓝1/m79) v9.1 一次性方案 — /init 即 PID1 全流程
+# 流程: ACM gadget(登录通道) → 状态页 → 找 userdata 的 Debian → PID1 exec switch_root
+# 兜底: 无 Debian → 救援页 + ttyGS0 shell
+# 本脚本作为 PID1 运行, switch_root 的 PID1 限制由此满足(此前 rcS 子进程调用会失败)
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+/bin/busybox --install -s /bin 2>/dev/null
+
+/bin/busybox mkdir -p /proc /sys /dev /tmp /newroot
+/bin/busybox mount -t proc proc /proc 2>/dev/null
+/bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
+/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || {
+    /bin/busybox mount -t tmpfs tmpfs /dev 2>/dev/null
+    /bin/busybox mdev -s 2>/dev/null
+}
+
+# ===== USB ACM gadget(Debian 的登录通道, 跨 switch_root 持续有效) =====
+A=/sys/class/android_usb/android0
+if [ -d "$A" ]; then
+    echo 0 > "$A/enable" 2>/dev/null
+    echo 2a45 > "$A/idVendor" 2>/dev/null
+    echo 0006 > "$A/idProduct" 2>/dev/null
+    echo acm > "$A/functions" 2>/dev/null
+    echo 1 > "$A/enable" 2>/dev/null
+    for i in 0 1; do
+        [ -f "/sys/class/tty/ttyGS$i/dev" ] || continue
+        MM=$(cat "/sys/class/tty/ttyGS$i/dev" 2>/dev/null)
+        [ -n "$MM" ] && mknod -m 666 "/dev/ttyGS$i" c ${MM%%:*} ${MM##*:} 2>/dev/null
+    done
+fi
+
+# ===== 屏幕状态页(1280×768 本机分辨率) + 背光 =====
+BL=/sys/class/leds/lcd-backlight/brightness
+echo 200 > "$BL" 2>/dev/null
+for fb in /dev/fb0 /dev/graphics/fb0; do
+    [ -e "$fb" ] || mknod "$fb" c 29 0 2>/dev/null
+    [ -e "$fb" ] && dd if=/etc/fb_linux.raw of="$fb" bs=4096 2>/dev/null
+done
+
+# ===== 等 eMMC 就绪(最多 20 秒) =====
+n=0
+while [ $n -lt 20 ] && [ ! -e /sys/block/mmcblk0 ]; do
+    sleep 1
+    n=$((n+1))
+done
+
+# ===== 按 PARTNAME 找 userdata 分区 =====
+USERDEV=""
+for ue in /sys/class/block/mmcblk0p*/uevent; do
+    [ -f "$ue" ] || continue
+    grep -q "PARTNAME=userdata" "$ue" 2>/dev/null || continue
+    bn=${ue%/uevent}
+    bn=${bn##*/}
+    MAJ=$(grep -oE "MAJOR=[0-9]+" "$ue" | cut -d= -f2)
+    MIN=$(grep -oE "MINOR=[0-9]+" "$ue" | cut -d= -f2)
+    mknod "/dev/$bn" b "$MAJ" "$MIN" 2>/dev/null
+    USERDEV="/dev/$bn"
+    break
+done
+# 兜底: scatter 实测 userdata 为 mmcblk0p20
+[ -n "$USERDEV" ] || { [ -b /dev/mmcblk0p20 ] && USERDEV=/dev/mmcblk0p20; }
+
+# ===== 挂载 Debian + PID1 exec switch_root =====
+if [ -n "$USERDEV" ] && mount -t ext4 "$USERDEV" /newroot 2>/dev/null && [ -e /newroot/sbin/init ]; then
+    echo "M1: switching to Debian on $USERDEV" > /dev/console 2>/dev/null
+    mount -o remount,rw /newroot 2>/dev/null
+    mount --move /proc /newroot/proc 2>/dev/null
+    mount --move /sys /newroot/sys 2>/dev/null
+    mount --move /dev /newroot/dev 2>/dev/null
+    exec switch_root /newroot /sbin/init
+fi
+
+# ===== 兜底: 未找到 Debian → 救援模式(状态页 + ttyGS0 shell) =====
+echo "M1: no Debian rootfs on $USERDEV, rescue mode" > /dev/console 2>/dev/null
+for fb in /dev/fb0 /dev/graphics/fb0; do
+    [ -e "$fb" ] && dd if=/etc/fb_rescue.raw of="$fb" bs=4096 2>/dev/null
+done
+echo 255 > "$BL" 2>/dev/null
+# ttyGS0 上的交互 shell(getty 通道已就绪)
+while true; do
+    sh < /dev/ttyGS0 > /dev/ttyGS0 2>&1
+    sleep 1
+done

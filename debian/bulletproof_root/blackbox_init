@@ -12,6 +12,15 @@ export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 /bin/busybox mount -t tmpfs tmpfs /dev 2>/dev/null
 /bin/busybox mdev -s 2>/dev/null
 
+# ===== 最早期可见信号: home 键背光闪烁(独立于屏幕的 LED 通道) =====
+# m79 配置的 LED 类名: button-backlight (mt65xx LED 驱动, 原厂内核二进制实锤)
+# 2 次清晰闪烁 = rcS 跑到了这里; 之后 ACM/屏幕/cache 各通道再各自表态
+LED=/sys/class/leds/button-backlight/brightness
+if [ -e "$LED" ]; then
+    echo 255 > "$LED" 2>/dev/null; echo 0 > "$LED" 2>/dev/null
+    echo 255 > "$LED" 2>/dev/null; echo 0 > "$LED" 2>/dev/null
+fi
+
 # ===== 通道① : USB ACM gadget 最先配置(最优先可见性) =====
 A=/sys/class/android_usb/android0
 if [ -d "$A" ]; then
