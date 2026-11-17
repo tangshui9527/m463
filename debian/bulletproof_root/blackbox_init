@@ -1,0 +1,108 @@
+#!/bin/busybox sh
+# M463(魅蓝1) v10 黑匣子探针 — PID 1 全流程(/init 即 PID1, 不经 busybox init)
+# 诊断写 cache 分区(按 PARTNAME 确认) + ACM shell + 60 秒后自动关机
+# 由机主用 mtkclient 回读 cache 拿到全部诊断(不需要任何串口硬件)
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+/bin/busybox --install -s /bin 2>/dev/null
+
+/bin/busybox mkdir -p /proc /sys /dev /tmp
+/bin/busybox mount -t proc proc /proc 2>/dev/null
+/bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
+/bin/busybox mount -t tmpfs tmpfs /dev 2>/dev/null
+/bin/busybox mdev -s 2>/dev/null
+
+# ===== 等 eMMC 就绪(最多 20 秒) =====
+n=0
+while [ $n -lt 20 ] && [ ! -e /sys/block/mmcblk0 ]; do
+    sleep 1
+    n=$((n+1))
+done
+
+# ===== ACM gadget(如果 USB 枚举可用 = 直接一个 shell) =====
+A=/sys/class/android_usb/android0
+if [ -d "$A" ]; then
+    echo 0 > "$A/enable" 2>/dev/null
+    echo 2a45 > "$A/idVendor" 2>/dev/null
+    echo 0006 > "$A/idProduct" 2>/dev/null
+    echo acm > "$A/functions" 2>/dev/null
+    echo 1 > "$A/enable" 2>/dev/null
+    for i in 0 1; do
+        [ -f "/sys/class/tty/ttyGS$i/dev" ] || continue
+        MM=$(cat "/sys/class/tty/ttyGS$i/dev" 2>/dev/null)
+        [ -n "$MM" ] && mknod -m 666 "/dev/ttyGS$i" c ${MM%%:*} ${MM##*:} 2>/dev/null
+    done
+    ( while true; do getty -L 115200 ttyGS0 vt100; sleep 1; done ) 2>/dev/null &
+fi
+
+# ===== 按 PARTNAME 找 cache 分区(名字不确认为 cache 绝不写) =====
+CACHEDEV=""
+for ue in /sys/class/block/mmcblk0p*/uevent; do
+    [ -f "$ue" ] || continue
+    if grep -q "PARTNAME=cache" "$ue" 2>/dev/null; then
+        bn=${ue%/uevent}
+        bn=${bn##*/}
+        MAJ=$(grep -oE "MAJOR=[0-9]+" "$ue" | cut -d= -f2)
+        MIN=$(grep -oE "MINOR=[0-9]+" "$ue" | cut -d= -f2)
+        if [ -n "$MAJ" ] && [ -n "$MIN" ]; then
+            mknod "/dev/$bn" b "$MAJ" "$MIN" 2>/dev/null
+            CACHEDEV="/dev/$bn"
+        fi
+        break
+    fi
+done
+
+# ===== 黑匣子内容收集(回答: cmdline/dmesg/上次启动/分区/设备/编译器) =====
+N=/tmp/bb.txt
+COLLECT() {
+    {
+        echo "=== M1 BLACKBOX v1, cycle=$HEART, $(date 2>/dev/null) ==="
+        echo "=== uptime ==="
+        cat /proc/uptime 2>/dev/null
+        echo "=== cmdline (LK 实传, 回答 Q5) ==="
+        cat /proc/cmdline 2>/dev/null
+        echo "=== version (编译器/工具链, 谜团B) ==="
+        cat /proc/version 2>/dev/null
+        echo "=== boot_mode ==="
+        cat /sys/class/BOOT/BOOT/boot/boot_mode 2>/dev/null
+        echo "=== dmesg (内核完整日志) ==="
+        dmesg 2>/dev/null
+        echo "=== last_kmsg (上次启动的 ram_console) ==="
+        cat /proc/last_kmsg 2>/dev/null
+        cat /proc/last_kmsg2 2>/dev/null
+        echo "=== partitions ==="
+        cat /proc/partitions 2>/dev/null
+        echo "=== devices ==="
+        cat /proc/devices 2>/dev/null
+        echo "=== android_usb 状态 ==="
+        for f in /sys/class/android_usb/android0/*; do
+            echo "$(basename $f)=$(cat $f 2>/dev/null)"
+        done
+        echo "=== block uevents (PARTNAME 全表) ==="
+        for f in /sys/class/block/*/uevent; do
+            echo "-- $f"; cat "$f" 2>/dev/null
+        done
+        echo "=== CACHEDEV=$CACHEDEV ==="
+        echo "=== END ==="
+    } > "$N" 2>/dev/null
+}
+
+HEART=0
+while [ $HEART -lt 12 ]; do
+    HEART=$((HEART+1))
+    COLLECT
+    if [ -n "$CACHEDEV" ]; then
+        dd if="$N" of="$CACHEDEV" bs=4096 conv=fsync 2>/dev/null
+        sync 2>/dev/null
+        echo "BLACKBOX: heartbeat $HEART -> $CACHEDEV ($(stat -c %s "$N" 2>/dev/null) bytes)" > /dev/console 2>/dev/null
+    else
+        echo "BLACKBOX: cache 未找到, 心跳 $HEART 仅本地" > /dev/console 2>/dev/null
+    fi
+    sleep 5
+done
+
+# ===== 60 秒后自动关机(reboot(2) 系统调用, 不碰 RGU 寄存器) =====
+poweroff -f 2>/dev/null
+sleep 10
+poweroff -f 2>/dev/null
+while true; do sleep 1; done

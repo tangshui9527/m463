@@ -1,0 +1,4 @@
+#!/bin/busybox sh
+# v8-test-exit: PID1(/init) 立即退出 → "Attempted to kill init" panic → 5秒重启循环
+# 用途: 验证 LK加载→cpio解包→/init执行 整条管线是否通
+exit 0

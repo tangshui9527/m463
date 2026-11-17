@@ -78,7 +78,12 @@
 
 ## 5. 已排除的方向（别再走）
 
-1. ~~充电模式自动开机进内核~~ → LK 层挂起（充电图标），不启动内核；
+1. **[待黑匣子验证，原结论无日志证据]** "关机插线 = LK 层挂起不进内核"——
+   充电图标同样符合 KPOC 解释（MTK_KERNEL_POWER_OFF_CHARGING=yes：LK 启动内核
+   boot_mode=8/androidboot.mode=charger，充电动画由用户态画；我们的内核在充电模式下
+   也会跑 initramfs，但当时状态页分辨率错误画不出来，充电图标可能是 LK logo 的残留显示）。
+   **黑匣子测试：关机插线等一分钟读 cache——boot_mode=8 + 有日志 = 插线即跑 initramfs，
+   电源键问题消失，/init 不区分启动模式照常进 Debian。**
 2. ~~devmem 写 WDT/SWRST 寄存器复位~~ → MPU 保护，访问即挂死内核（v8.2/v8.3 实测）；
 3. ~~legacy DA 的 reset 实现自动重启~~ → FINISH 语义 = 断电（0/1 实测）；
 4. ~~ModemManager/brltty 抢串口~~ → go 上不存在；

@@ -21,20 +21,15 @@ SUBSCRIBERS = set()
 LOCK = threading.Lock()
 
 TARGETS = {
-    "probe_loop": {
-        "name": "🚀 v8 无限重启探针: 串口心跳 + 自动软复位循环",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-v8.img;reset"',
-        "desc": "每轮开机串口打印进度并自动软复位(约4秒一轮)。监控页8081实时看每轮活到哪一步"
+    "test_exit": {
+        "name": "🧪 第一步: 退出测试镜像 (10分钟回答: 刷写管线是否通)",
+        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-testexit.img;reset"',
+        "desc": "PID1立即退出→panic→5秒重启循环。若循环出现=LK加载/cpio解包/init执行全通; 不循环=ramdisk层问题"
     },
-    "linux_v7_serial": {
-        "name": "🚀 v7.2: v2内核(自动重启) + 串口自切 (TTL抓panic原文)",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-v7.img;reset"',
-        "desc": "v2内核会3~5秒panic自动重启; rcS开机即切UART模式, panic原文从USB口流出(TTL线抓取)"
-    },
-    "linux_v2_reboot": {
-        "name": "🚀 已验证会自动重启的 v2 版本 (5秒panic循环)",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-v2.img;reset"',
-        "desc": "历史上两次实机验证: 刷入后自动进入5秒panic重启循环, 无限重启不停"
+    "v10_blackbox": {
+        "name": "🚀 第二步: 黑匣子探针 (诊断写cache分区 + ACM shell + 60秒自动关机)",
+        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-v10.img;reset"',
+        "desc": "/init为PID1全流程: 诊断写cache分区(机主mtkclient回读) + ACM shell + 60秒自动关机。cache按PARTNAME确认, 绝不误写"
     },
     "dump_console_plain": {
         "name": "📋 数据窗口收割: 每轮循环的 BROM 窗口自动抓 ram_console",
