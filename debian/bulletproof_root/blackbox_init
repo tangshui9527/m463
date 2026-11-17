@@ -1,12 +1,15 @@
 #!/bin/busybox sh
-# M463(魅蓝1) v10 黑匣子探针 — PID 1 全流程(/init 即 PID1, 不经 busybox init)
-# 诊断写 cache 分区(按 PARTNAME 确认) + ACM shell + 60 秒后自动关机
-# 由机主用 mtkclient 回读 cache 拿到全部诊断(不需要任何串口硬件)
+# M463(魅蓝1) v10.1 黑匣子 — PID 1 全流程
+# 架构(两级):
+#   第一级: MTK ram_console(内核自带, 0x43F00000) 自动捕获 panic/内核日志, 热复位保留
+#   第二级: 本脚本读 /proc/last_kmsg2(上轮遗言) + 本轮诊断 → 写 cache 分区(ext4 文件) → 关机
+#   回读: 机主插刷机线 → mtkclient 读 cache → 诊断到手(不需要串口硬件)
+# 红线: cache 按 PARTNAME=cache 确认; ext4 挂载优先; 裸写只做兜底且避开分区头部
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 /bin/busybox --install -s /bin 2>/dev/null
 
-/bin/busybox mkdir -p /proc /sys /dev /tmp
+/bin/busybox mkdir -p /proc /sys /dev /tmp /bb /cache
 /bin/busybox mount -t proc proc /proc 2>/dev/null
 /bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
 /bin/busybox mount -t tmpfs tmpfs /dev 2>/dev/null
@@ -19,7 +22,7 @@ while [ $n -lt 20 ] && [ ! -e /sys/block/mmcblk0 ]; do
     n=$((n+1))
 done
 
-# ===== ACM gadget(如果 USB 枚举可用 = 直接一个 shell) =====
+# ===== ACM gadget + getty(USB 可枚举时 = 直接一个 root shell) =====
 A=/sys/class/android_usb/android0
 if [ -d "$A" ]; then
     echo 0 > "$A/enable" 2>/dev/null
@@ -35,71 +38,94 @@ if [ -d "$A" ]; then
     ( while true; do getty -L 115200 ttyGS0 vt100; sleep 1; done ) 2>/dev/null &
 fi
 
-# ===== 按 PARTNAME 找 cache 分区(名字不确认为 cache 绝不写) =====
+# ===== 按 PARTNAME 找 expdb 分区(MTK 原生异常调试分区, 10MB) =====
 CACHEDEV=""
 for ue in /sys/class/block/mmcblk0p*/uevent; do
     [ -f "$ue" ] || continue
-    if grep -q "PARTNAME=cache" "$ue" 2>/dev/null; then
-        bn=${ue%/uevent}
-        bn=${bn##*/}
-        MAJ=$(grep -oE "MAJOR=[0-9]+" "$ue" | cut -d= -f2)
-        MIN=$(grep -oE "MINOR=[0-9]+" "$ue" | cut -d= -f2)
-        if [ -n "$MAJ" ] && [ -n "$MIN" ]; then
-            mknod "/dev/$bn" b "$MAJ" "$MIN" 2>/dev/null
-            CACHEDEV="/dev/$bn"
-        fi
-        break
+    grep -q "PARTNAME=expdb" "$ue" 2>/dev/null || continue
+    bn=${ue%/uevent}
+    bn=${bn##*/}
+    MAJ=$(grep -oE "MAJOR=[0-9]+" "$ue" | cut -d= -f2)
+    MIN=$(grep -oE "MINOR=[0-9]+" "$ue" | cut -d= -f2)
+    if [ -n "$MAJ" ] && [ -n "$MIN" ]; then
+        mknod "/dev/$bn" b "$MAJ" "$MIN" 2>/dev/null
+        CACHEDEV="/dev/$bn"
     fi
+    break
 done
 
-# ===== 黑匣子内容收集(回答: cmdline/dmesg/上次启动/分区/设备/编译器) =====
-N=/tmp/bb.txt
-COLLECT() {
+# ===== 收集: 上轮遗言(last_kmsg2) + 本轮全诊断 =====
+collect() {
     {
-        echo "=== M1 BLACKBOX v1, cycle=$HEART, $(date 2>/dev/null) ==="
+        echo "=== M1 BLACKBOX v10.1 ==="
         echo "=== uptime ==="
         cat /proc/uptime 2>/dev/null
-        echo "=== cmdline (LK 实传, 回答 Q5) ==="
+        echo "=== cmdline (LK 实传) ==="
         cat /proc/cmdline 2>/dev/null
-        echo "=== version (编译器/工具链, 谜团B) ==="
+        echo "=== version (编译器) ==="
         cat /proc/version 2>/dev/null
         echo "=== boot_mode ==="
         cat /sys/class/BOOT/BOOT/boot/boot_mode 2>/dev/null
-        echo "=== dmesg (内核完整日志) ==="
+        echo "=== eMMC CID ==="
+        cat /sys/block/mmcblk0/device/cid 2>/dev/null
+        echo "=== dmesg (本轮内核日志) ==="
         dmesg 2>/dev/null
-        echo "=== last_kmsg (上次启动的 ram_console) ==="
-        cat /proc/last_kmsg 2>/dev/null
+        echo "=== last_kmsg2 (上轮遗言) ==="
         cat /proc/last_kmsg2 2>/dev/null
+        echo "=== last_kmsg ==="
+        cat /proc/last_kmsg 2>/dev/null
         echo "=== partitions ==="
         cat /proc/partitions 2>/dev/null
-        echo "=== devices ==="
-        cat /proc/devices 2>/dev/null
-        echo "=== android_usb 状态 ==="
+        echo "=== android_usb ==="
         for f in /sys/class/android_usb/android0/*; do
             echo "$(basename $f)=$(cat $f 2>/dev/null)"
         done
-        echo "=== block uevents (PARTNAME 全表) ==="
+        echo "=== block PARTNAME 全表 ==="
         for f in /sys/class/block/*/uevent; do
-            echo "-- $f"; cat "$f" 2>/dev/null
+            echo "-- ${f##*/}"; cat "$f" 2>/dev/null
         done
-        echo "=== CACHEDEV=$CACHEDEV ==="
-        echo "=== END ==="
-    } > "$N" 2>/dev/null
+        echo "=== END OF BLACKBOX ==="
+    } > /bb/all.txt 2>/dev/null
 }
 
-HEART=0
-while [ $HEART -lt 12 ]; do
-    HEART=$((HEART+1))
-    COLLECT
-    if [ -n "$CACHEDEV" ]; then
-        dd if="$N" of="$CACHEDEV" bs=4096 conv=fsync 2>/dev/null
+collect
+
+# ===== 写入 cache: ext4 挂载写文件(原子改名) 优先, 裸写兜底 =====
+WRITTEN=0
+if [ -n "$CACHEDEV" ]; then
+    if mount -t ext4 "$CACHEDEV" /cache 2>/dev/null; then
+        mkdir -p /cache/blackbox 2>/dev/null
+        cp /bb/all.txt /cache/blackbox/all.txt 2>/dev/null
+        cp /bb/last_kmsg2.txt /cache/blackbox/last_kmsg2.txt 2>/dev/null
         sync 2>/dev/null
-        echo "BLACKBOX: heartbeat $HEART -> $CACHEDEV ($(stat -c %s "$N" 2>/dev/null) bytes)" > /dev/console 2>/dev/null
+        umount /cache 2>/dev/null
+        WRITTEN=1
     else
-        echo "BLACKBOX: cache 未找到, 心跳 $HEART 仅本地" > /dev/console 2>/dev/null
+        # 裸写兜底: 写在 offset 8MB 处(避开 ext4 头部元数据)
+        dd if=/bb/all.txt of="$CACHEDEV" bs=4096 seek=2048 conv=fsync 2>/dev/null && WRITTEN=1
     fi
+fi
+echo "BLACKBOX: written=$WRITTEN cache=$CACHEDEV" > /dev/console 2>/dev/null
+
+# ===== 心跳循环: 每 5 秒重新收集+写入(内核若中途挂死, cache 停在最后状态) =====
+i=0
+while [ $i -lt 12 ]; do
     sleep 5
+    collect
+    if [ -n "$CACHEDEV" ]; then
+        if grep -q "on /cache" /proc/mounts 2>/dev/null; then
+            mount -o remount,ro /cache 2>/dev/null
+            mount -o remount,rw /cache 2>/dev/null
+        else
+            mount -t ext4 "$CACHEDEV" /cache 2>/dev/null
+        fi
+        cp /bb/all.txt /cache/blackbox/all.txt 2>/dev/null
+        sync 2>/dev/null
+    fi
+    i=$((i+1))
 done
+sync 2>/dev/null
+umount /cache 2>/dev/null
 
 # ===== 60 秒后自动关机(reboot(2) 系统调用, 不碰 RGU 寄存器) =====
 poweroff -f 2>/dev/null

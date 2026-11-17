@@ -21,6 +21,11 @@ SUBSCRIBERS = set()
 LOCK = threading.Lock()
 
 TARGETS = {
+    "probe_loop": {
+        "name": "🚀 v8.5 探针: 无devmem版 (原厂内核+早期串口+panic循环)",
+        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-v8.img;reset"',
+        "desc": "修复版: 不含devmem(RGU访问会挂死内核)。刷完观察自动重启/挂死行为, 串口(如已接)看心跳"
+    },
     "test_exit": {
         "name": "🧪 第一步: 退出测试镜像 (10分钟回答: 刷写管线是否通)",
         "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-testexit.img;reset"',
