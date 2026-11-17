@@ -9,3 +9,4 @@ build/
 __pycache__/
 gen_init_cpio
 stock_ramdisk_extracted/
+.DS_Store

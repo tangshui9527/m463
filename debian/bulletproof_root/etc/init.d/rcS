@@ -1,62 +1,66 @@
 #!/bin/sh
+# M463(魅蓝1/m79) v9 一次性方案: ACM gadget + Debian rootfs 切换
+# 目标: 刷两个镜像(boot v9 + userdata linuxroot) → 插线 → Debian 直接启动 → ttyACM0 登录
+# 本 rcS: 配 USB ACM gadget(ttyGS0/Debian getty 通道) → 挂 userdata → switch_root 进 Debian
+# 屏幕状态页(1280×768)提供可视化确认; 失败则画救援页
+
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 /bin/busybox --install -s /bin 2>/dev/null
-/bin/busybox --install -s /sbin 2>/dev/null
 
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s 2>/dev/null
 
-# 1. Visual confirmation: Clear screen to show Linux took over display
-for fb in /dev/fb0 /dev/graphics/fb0; do
-    if [ -c "$fb" ] || [ -b "$fb" ] || [ -e "$fb" ]; then
-        # Fill first 8MB (1080x1920x4 = ~8MB) with solid green/blue pattern or zeroes
-        dd if=/dev/zero of="$fb" bs=1M count=8 2>/dev/null
-    fi
-done
-
-# 2. Configure USB CDC-ACM Serial Console
+# ===== USB ACM gadget(Debian 的登录通道, 跨 switch_root 持续有效) =====
 A=/sys/class/android_usb/android0
 if [ -d "$A" ]; then
     echo 0 > "$A/enable" 2>/dev/null
-    sleep 0.2
     echo 2a45 > "$A/idVendor" 2>/dev/null
     echo 0006 > "$A/idProduct" 2>/dev/null
-    echo 02 > "$A/bDeviceClass" 2>/dev/null
-    if [ -d "$A/f_acm" ]; then
-        echo 1 > "$A/f_acm/instances" 2>/dev/null
-    fi
+    echo 02  > "$A/bDeviceClass" 2>/dev/null
+    [ -d "$A/f_acm" ] && echo 1 > "$A/f_acm/instances" 2>/dev/null
     echo acm > "$A/functions" 2>/dev/null
-    if [ -f /sys/devices/platform/mt_usb/saving ]; then
-        echo 1 > /sys/devices/platform/mt_usb/saving 2>/dev/null
-    fi
-    echo 1 > "$A/enable" 2>/dev/null
+    echo 1  > "$A/enable" 2>/dev/null
 fi
-
-# Ensure device nodes for ttyGS0
-for i in 0 1 2 3; do
-    if [ -f "/sys/class/tty/ttyGS$i/dev" ]; then
-        MM=$(cat "/sys/class/tty/ttyGS$i/dev")
-        mknod -m 666 "/dev/ttyGS$i" c ${MM%%:*} ${MM##*:} 2>/dev/null
-    fi
+for i in 0 1 2; do
+    [ -f "/sys/class/tty/ttyGS$i/dev" ] || continue
+    MM=$(cat "/sys/class/tty/ttyGS$i/dev" 2>/dev/null)
+    [ -n "$MM" ] && mknod -m 666 "/dev/ttyGS$i" c ${MM%%:*} ${MM##*:} 2>/dev/null
 done
 
-echo "==============================================" > /dev/console 2>/dev/null
-echo "   Meizu M463 Debian Linux Rescue Console!     " > /dev/console 2>/dev/null
-echo "==============================================" > /dev/console 2>/dev/null
+# ===== 屏幕状态页(1280×768 本机分辨率) + 背光 =====
+mkdir -p /dev/graphics 2>/dev/null
+BL=/sys/class/leds/lcd-backlight/brightness
+echo 200 > "$BL" 2>/dev/null
+show_fb() {
+    for fb in /dev/fb0 /dev/graphics/fb0; do
+        [ -e "$fb" ] || mknod "$fb" c 29 0 2>/dev/null
+        [ -e "$fb" ] && dd "if=$1" "of=$fb" bs=1M 2>/dev/null
+    done
+}
+show_fb /etc/fb_linux.raw
+echo "PROBE v9: ACM gadget up, mounting Debian rootfs" > /dev/console 2>/dev/null
 
-# 3. Mount Debian rootfs if available on userdata partition
-for p in /dev/mmcblk0p20 /dev/mmcblk0p* /dev/block/platform/mtk-msdc.0/by-name/userdata; do
+# ===== 挂载 userdata 中的 Debian → switch_root =====
+mkdir -p /newroot 2>/dev/null
+DEBIAN=0
+for p in /dev/mmcblk0p20 /dev/block/platform/mtk-msdc.0/by-name/userdata; do
     [ -b "$p" ] || continue
     if mount -t ext4 -o ro "$p" /newroot 2>/dev/null; then
-        if [ -f /newroot/etc/wbm1-release ] || [ -f /newroot/sbin/init ]; then
-            echo "[INIT] Switching root to Debian on $p..." > /dev/console 2>/dev/null
+        if [ -x /newroot/sbin/init ] || [ -f /newroot/sbin/init ]; then
+            DEBIAN=1
+            echo "PROBE: Debian rootfs found on $p, switching root" > /dev/console 2>/dev/null
             mount -o remount,rw /newroot 2>/dev/null
             mount --move /proc /newroot/proc 2>/dev/null
-            mount --move /sys /newroot/sys 2>/dev/null
-            mount --move /dev /newroot/dev 2>/dev/null
+            mount --move /sys  /newroot/sys  2>/dev/null
+            mount --move /dev  /newroot/dev  2>/dev/null
             exec switch_root /newroot /sbin/init
         fi
         umount /newroot 2>/dev/null
     fi
 done
+
+# ===== 未找到 Debian: 救援页 + 救援 shell =====
+show_fb /etc/fb_rescue.raw
+echo "PROBE: no Debian rootfs, rescue shell" > /dev/console 2>/dev/null
+exec /bin/busybox sh

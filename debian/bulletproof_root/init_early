@@ -1,0 +1,11 @@
+#!/bin/busybox sh
+# /init 前置脚本: 内核 exec 的第一个用户态程序(约0.3秒)
+# 在一切之前完成: 挂载 + USB连接器切UART模式(串口最早可见) → 再交给 busybox init
+/bin/busybox mount -t proc proc /proc 2>/dev/null
+/bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
+
+# USB 连接器切 UART 模式 — 串口从此可见(内核后续所有输出都会走这里)
+echo 1 > /sys/devices/platform/mt_usb/portmode 2>/dev/null
+
+/bin/busybox --install -s /bin 2>/dev/null
+exec /bin/busybox init

@@ -21,53 +21,89 @@ SUBSCRIBERS = set()
 LOCK = threading.Lock()
 
 TARGETS = {
-    "linux_v2": {
-        "name": "🚀 目标 1: 修复版 Linux (boot-linux-v2 + lk-patched-v2)",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w lk lk-patched-v2.img;w boot boot-linux-v2.img;reset"',
-        "desc": "自编内核(fbcon+DEVTMPFS) + 修复版MTK头/SHA-1 + 三重Patch版LK"
+    "probe_loop": {
+        "name": "🚀 v8 无限重启探针: 串口心跳 + 自动软复位循环",
+        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-v8.img;reset"',
+        "desc": "每轮开机串口打印进度并自动软复位(约4秒一轮)。监控页8081实时看每轮活到哪一步"
     },
-    "linux_stock_lk": {
-        "name": "🐧 目标 2: 修复版 Linux (boot-linux-v2 + 原厂LK)",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w lk lk-stock.img;w boot boot-linux-v2.img;reset"',
-        "desc": "自编内核 + 修复版MTK头/SHA-1 + 原厂未动LK"
+    "linux_v7_serial": {
+        "name": "🚀 v7.2: v2内核(自动重启) + 串口自切 (TTL抓panic原文)",
+        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-v7.img;reset"',
+        "desc": "v2内核会3~5秒panic自动重启; rcS开机即切UART模式, panic原文从USB口流出(TTL线抓取)"
     },
-    "diag_mixA": {
-        "name": "🔬 诊断 A: 原厂内核 + Linux Ramdisk",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w lk lk-stock.img;w boot boot-mixA-fixed.img;reset"',
-        "desc": "隔离测试: 验证 Debian initramfs 是否能被原厂内核正常引导"
+    "linux_v2_reboot": {
+        "name": "🚀 已验证会自动重启的 v2 版本 (5秒panic循环)",
+        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-v2.img;reset"',
+        "desc": "历史上两次实机验证: 刷入后自动进入5秒panic重启循环, 无限重启不停"
     },
-    "dump_ram_console": {
-        "name": "📋 读取内核崩溃日志: dump DRAM RAM Console (0x43F00000)",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py da peek 0x43F00000 0x10000 --filename /tmp/ram_console_dump.bin && cp /tmp/ram_console_dump.bin /tmp/ram_console_saved.bin',
-        "desc": "从 DRAM 0x43F00000 抓取内核 printk/panic 日志并解析"
+    "dump_console_plain": {
+        "name": "📋 数据窗口收割: 每轮循环的 BROM 窗口自动抓 ram_console",
+        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py da peek 0x43F00000 0x10000 --filename /tmp/ram_console_dump.bin 2>&1 | tail -1',
+        "desc": "v2 panic循环每5秒产生一个BROM窗口, 本目标在每个窗口自动读取64KB console(panic原文在内)"
     },
-    "diag_mixB": {
-        "name": "🔬 诊断 B: Linux 内核 + 原厂 Flyme Ramdisk",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w lk lk-stock.img;w boot boot-mixB-fixed.img;reset"',
-        "desc": "隔离测试: 验证自编译内核是否能正常引导原厂系统"
-    },
-    "flyme_root": {
-        "name": "🔑 诊断 C: 原厂 Flyme 破权版 (带 ADB Root & TCP 5555)",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w lk lk-stock.img;w boot boot-root-fixed.img;reset"',
-        "desc": "开启 ADB root/调试，进入 Flyme 获取内核 dmesg 与硬件信息"
+    "forensic_idle": {
+        "name": "🔒 待机: 只显示 USB 模式, 不自动刷机",
+        "cmd": 'sleep 3600',
+        "desc": "监控模式: 不占用 USB, 不刷写任何分区。要刷机请点击其他目标"
     },
     "restore_stock": {
         "name": "🛡️ 救砖回滚: 彻底恢复原厂 Flyme 官方系统",
-        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w lk lk-stock.img;w boot boot-stock.img;reset"',
+        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w seccfg seccfg-read.img; w lk lk-stock.img; w boot boot-stock.img; w recovery recovery-stock.img; reset"',
         "desc": "恢复原厂 lk-stock.img + boot-stock.img，开机进官方 Flyme"
     }
 }
 
-CURRENT_TARGET = "linux_v2"
+CURRENT_TARGET = "linux_v2_reboot"
 CURRENT_PROC = None
 RELOAD_EVENT = threading.Event()
+
+# ============ USB 实时模式检测（界面辅助：让用户看得见设备处于什么模式） ============
+USB_MODE = {"mode": "detecting", "text": "⚪ 检测中...", "vidpid": ""}
+MODE_MAP = [
+    ("0e8d:0003", "brom",      "🟠 BROM 刷机模式 (0e8d:0003) —— 通道正常，可执行刷写/取证"),
+    ("2a45:0006", "linux",     "🟢 Linux USB 枚举成功 (2a45:0006) —— 我们的系统在跑！"),
+    ("0bb4:0c01", "fastboot",  "🔴 Fastboot 模式 (0bb4:0c01) —— 不是 BROM！需彻底关机后重新按住音量减插线"),
+    ("18d1:d00d", "lk",        "🟡 LK 下载模式 (18d1:d00d)"),
+    ("0e8d:2000", "preloader", "🟡 Preloader 阶段 (0e8d:2000)"),
+    ("0e8d:2001", "preloader", "🟡 Preloader/DA 下载阶段 (0e8d:2001) —— 刷机中的正常状态, 手机屏幕全黑"),
+]
+
+def usb_mode_poller():
+    import re as _re
+    global USB_MODE
+    while True:
+        try:
+            out = subprocess.run("lsusb 2>/dev/null", shell=True, capture_output=True, text=True, timeout=5).stdout
+            detected = None
+            for line in out.splitlines():
+                m = _re.search(r'ID ([0-9a-f]{4}):([0-9a-f]{4})', line)
+                if not m:
+                    continue
+                vidpid = f"{m.group(1)}:{m.group(2)}"
+                for want, mode, text in MODE_MAP:
+                    if vidpid == want:
+                        detected = {"mode": mode, "text": text, "vidpid": vidpid}
+                        break
+                if detected:
+                    break
+            if detected is None:
+                detected = {"mode": "none", "text": "⚪ 未检测到手机 (无 MTK/Meizu USB 设备)", "vidpid": ""}
+            if detected["mode"] != USB_MODE["mode"]:
+                with LOCK:
+                    USB_MODE = detected
+                broadcast(f"[MODE] {detected['text']}")
+        except Exception:
+            pass
+        time.sleep(2)
+
+threading.Thread(target=usb_mode_poller, daemon=True).start()
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>魅蓝 Note (M463) 自动刷机实时监控</title>
+    <title>魅蓝1 (M463/m79) 刷机终端 · 串口日志监控: 8081</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -187,7 +223,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
     <header>
         <div>
-            <h1>魅蓝 Note (M463) 自动刷机终端</h1>
+            <h1>魅蓝1 (m79) 刷机终端 —— 刷机日志在此页 · 串口日志在 8081 页</h1>
             <div id="target-desc" style="font-size: 12px; color: #8b949e; margin-top: 4px;">当前方案: 加载中...</div>
         </div>
         <div id="status-badge" class="badge badge-waiting">⏳ 等待设备连接 BROM...</div>
@@ -197,9 +233,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <!-- Buttons injected dynamically -->
     </div>
 
+    <div id="usb-mode" style="background:#161b22; border:1px solid #30363d; border-radius:6px; padding:10px 16px; margin-bottom:12px; font-size:15px; font-weight:bold;">⚪ 检测中...</div>
+
     <div class="guide-box">
-        <strong>操作指引（BROM 抓取方法）:</strong>
-        手机拔掉 USB ➔ 长按电源键 10 秒彻底关机 ➔ <strong>按住音量减键不放</strong> ➔ 插上 USB 线 ➔ 屏幕亮起检测进度即松手。程序会自动执行刷入并发送重启指令！
+        <strong>操作指引（BROM 抓取方法，与实测一致）:</strong>
+        手机拔掉 USB ➔ 彻底关机 ➔ <strong>按住音量加键不放</strong> ➔ 插上 USB 线 ➔ 屏幕全黑、程序握手成功即松手。刷机完成后自动重启。
+        <br><strong>开机判定（v6）:</strong> 进入 Linux = 开机数秒内背光 暗→亮→暗→亮 两轮脉冲 + 宿主机 <code>lsusb</code> 枚举 <code>2a45:0006</code>；若仍见 <code>18d1:d00d</code> 且无脉冲 = 未进 Linux。重启前请确保电池已充电（老电池压降会伪装成 panic 重启）。
     </div>
 
     <div class="terminal-container">
@@ -269,6 +308,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 });
         }
 
+        function pollUsbMode() {
+            fetch('/api/usbmode')
+                .then(r => r.json())
+                .then(d => { document.getElementById('usb-mode').textContent = d.text; })
+                .catch(() => {});
+        }
+        pollUsbMode();
+        setInterval(pollUsbMode, 2000);
+
         loadTargets();
 
         const evtSource = new EventSource("/stream");
@@ -324,6 +372,11 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             resp = {"current": CURRENT_TARGET, "targets": TARGETS}
             self.wfile.write(json.dumps(resp).encode("utf-8"))
+        elif url.path == "/api/usbmode":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(USB_MODE).encode("utf-8"))
         elif url.path == "/stream":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -384,8 +437,10 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 def run_flashing_loop():
-    global CURRENT_PROC, RELOAD_EVENT
+    global CURRENT_PROC, RELOAD_EVENT, CURRENT_TARGET
     while True:
+        if CURRENT_TARGET not in TARGETS:
+            CURRENT_TARGET = list(TARGETS.keys())[0]
         target_info = TARGETS[CURRENT_TARGET]
         cmd = target_info["cmd"]
 
@@ -410,6 +465,7 @@ def run_flashing_loop():
         RELOAD_EVENT.clear()
 
         buffer = ""
+        saw_write = False  # 只有日志里出现真实写入才算刷机成功（exit 0 不等于写入成功）
         while True:
             if RELOAD_EVENT.is_set():
                 break
@@ -425,6 +481,8 @@ def run_flashing_loop():
                         line, buffer = buffer.split("\n", 1)
                         clean_line = line.replace("\r", "").strip()
                         if clean_line:
+                            if "Wrote" in clean_line or "Successfully wrote" in clean_line:
+                                saw_write = True
                             broadcast(clean_line)
                 except OSError:
                     break
@@ -479,8 +537,14 @@ def run_flashing_loop():
                     time.sleep(1)
                 continue
 
-            broadcast("[SYSTEM] ✅ 刷机流水线执行完成 (exit 0)！设备已自动重启！")
-            broadcast("[[PROCESS_COMPLETED_SUCCESS]]")
+            if saw_write:
+                broadcast("[SYSTEM] ✅ 检测到分区写入成功 (Wrote ... 100%)！设备已自动重启！")
+                broadcast("[[PROCESS_COMPLETED_SUCCESS]]")
+            else:
+                broadcast("[SYSTEM] ❌ mtkclient 退出但没有写入任何分区 —— 本次刷机未发生！")
+                broadcast("[SYSTEM] 常见原因: ① 手机未彻底关机就插线 ② 没按住音量加（不在 BROM） ③ 电池不足握手被复位 ④ 尾插 FPC 接触不良")
+                broadcast("[SYSTEM] 请: 长按电源10秒关机 → 插线充几分钟电 → 按住音量加不放插线 → 屏幕保持全黑")
+                broadcast("[[PROCESS_COMPLETED_FAILED]]")
         else:
             broadcast(f"[SYSTEM] ⚠️ 进程结束 (exit code {returncode})")
             broadcast("[[PROCESS_COMPLETED_FAILED]]")

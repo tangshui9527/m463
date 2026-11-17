@@ -35,6 +35,8 @@ def main():
     ap.add_argument("--ramdisk", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--partition-size", type=int, default=16 * 1024 * 1024)
+    ap.add_argument("--ramdisk-name", default="ROOTFS",
+                    help="MTK ramdisk 段头名字：boot 用 ROOTFS，recovery 必须用 RECOVERY")
     a = ap.parse_args()
 
     base = open(a.base, "rb").read()
@@ -56,7 +58,7 @@ def main():
 
     rpayload = open(a.ramdisk, "rb").read()
     if rpayload[:4] != MTK_MAGIC:
-        rseg = mtk_seg(rpayload, b"ROOTFS")
+        rseg = mtk_seg(rpayload, a.ramdisk_name.encode())
     else:
         payload = struct.unpack("<I", rpayload[4:8])[0]
         if payload != len(rpayload) - 512:

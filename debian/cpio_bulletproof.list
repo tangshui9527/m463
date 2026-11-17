@@ -21,8 +21,10 @@ nod /dev/tty0 0666 0 0 c 4 0
 nod /dev/tty1 0666 0 0 c 4 1
 
 file /bin/busybox /Users/tangshui/test/m463/debian/build/initramfs/bin/busybox 0755 0 0
-file /init /Users/tangshui/test/m463/debian/build/initramfs/bin/busybox 0755 0 0
+file /init /Users/tangshui/test/m463/debian/bulletproof_root/init_early 0755 0 0
 file /etc/inittab /Users/tangshui/test/m463/debian/bulletproof_root/etc/inittab 0644 0 0
 file /etc/init.d/rcS /Users/tangshui/test/m463/debian/bulletproof_root/etc/init.d/rcS 0755 0 0
+file /etc/fb_linux.raw /Users/tangshui/test/m463/debian/build/fb_linux.raw 0644 0 0
+file /etc/fb_rescue.raw /Users/tangshui/test/m463/debian/build/fb_rescue.raw 0644 0 0
 
 slink /bin/sh /bin/busybox 0777 0 0
