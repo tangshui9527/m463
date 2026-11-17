@@ -26,6 +26,11 @@ TARGETS = {
         "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-v8.img;reset"',
         "desc": "修复版: 不含devmem(RGU访问会挂死内核)。刷完观察自动重启/挂死行为, 串口(如已接)看心跳"
     },
+    "read_cache": {
+        "name": "📋 读取 cache 分区 (黑匣子数据回读, 只读112MB约15秒)",
+        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py r cache cache-dump.img 2>&1 | tail -2',
+        "desc": "只读操作: 把 cache 分区(黑匣子写入的诊断数据)原样读回电脑, 不刷写任何东西"
+    },
     "test_exit": {
         "name": "🧪 第一步: 退出测试镜像 (10分钟回答: 刷写管线是否通)",
         "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-testexit.img;reset"',
