@@ -38,7 +38,7 @@ preloader 停驻 → go 上暖机中的 mtk 瞬间握手 → boot-v16 自动刷�
 ## 刷机操作
 - go 机: cd ~/mtkclient; 按住音量键插线 → 停驻 0e8d:2001 →
   `echo 1122 | sudo -S python3 mtk.py w boot boot-v16.img`
-- 或被动等猎手: /tmp/predator.sh 已循环执行 `mtk.py w boot boot-v16.img`
+- 或被动等猎手: ~/predator.sh 已循环执行（注意: go 重启后需重新启动: setsid ~/predator.sh &） `mtk.py w boot boot-v16.img`
 - 刷 userdata: `mtk.py w userdata /tmp/linuxroot.img`（/tmp/linuxroot.img 为最新修复版）
 - 读 cache: `mtk.py r cache /tmp/x.img`；黑匣子数据在偏移 0x800000，
   v15+ 错误日志在 0x900000(mount错误)/0xA00000(WiFi诊断)。
