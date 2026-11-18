@@ -1,12 +1,16 @@
 #!/bin/busybox sh
-# M463(魅蓝1) v10.2 黑匣子 — PID 1 全流程, 最大可见性版
+# M463(魅蓝1) v11 黑匣子 — PID 1 全流程, 最大可见性版
+# v11 修复(v10.2 实测教训):
+#   ① 缺 /cache 挂载点 → ext4 mount 必败 → 只剩首写一次 (2026-11-18 cache 8MB 处实锤)
+#   ② 心跳循环只重试 mount, 无 dd 兜底 → 60 秒白跑
+#   ③ 状态页按 1280×768 BGRA 正确重绘, 心跳里持续重绘
 # 三通道同时验证: ① USB ACM root shell ② 手机屏幕状态页 ③ cache 分区数据
 # 上轮遗言: /proc/last_kmsg2 (MTK ram_console, panic 原文)
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 /bin/busybox --install -s /bin 2>/dev/null
 
-/bin/busybox mkdir -p /proc /sys /dev /tmp /bb
+/bin/busybox mkdir -p /proc /sys /dev /tmp /bb /cache
 /bin/busybox mount -t proc proc /proc 2>/dev/null
 /bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
 /bin/busybox mount -t tmpfs tmpfs /dev 2>/dev/null
@@ -49,7 +53,7 @@ done
 # ===== 收集: 上轮遗言(last_kmsg2) + 本轮全诊断 =====
 collect() {
     {
-        echo "=== M1 BLACKBOX v10.2 ==="
+        echo "=== M1 BLACKBOX v11 ==="
         echo "=== uptime ==="
         cat /proc/uptime 2>/dev/null
         echo "=== cmdline (LK 实传, 回答 Q5) ==="
@@ -76,7 +80,7 @@ collect() {
         for f in /sys/class/block/*/uevent; do
             echo "-- ${f##*/}"; cat "$f" 2>/dev/null
         done
-        echo "=== END OF BLACKBOX v10.2 ==="
+        echo "=== END OF BLACKBOX v11 ==="
     } > /bb/all.txt 2>/dev/null
 }
 collect
@@ -97,35 +101,32 @@ for ue in /sys/class/block/mmcblk0p*/uevent; do
     break
 done
 
-WRITTEN=0
-if [ -n "$CACHEDEV" ]; then
-    if mount -t ext4 "$CACHEDEV" /cache 2>/dev/null; then
-        mkdir -p /cache/blackbox 2>/dev/null
-        cp /bb/all.txt /cache/blackbox/all.txt 2>/dev/null
-        sync 2>/dev/null
-        umount /cache 2>/dev/null
-        WRITTEN=1
-    else
-        dd if=/bb/all.txt of="$CACHEDEV" bs=4096 seek=2048 conv=fsync 2>/dev/null && WRITTEN=1
+# ===== 写 cache: ext4 文件优先, 裸写 dd 兜底(v11: 首写与心跳统一走本函数) =====
+write_cache() {
+    if [ -n "$CACHEDEV" ]; then
+        if mount -t ext4 "$CACHEDEV" /cache 2>/dev/null; then
+            mkdir -p /cache/blackbox 2>/dev/null
+            cp /bb/all.txt /cache/blackbox/all.txt 2>/dev/null
+            sync 2>/dev/null
+            umount /cache 2>/dev/null
+        else
+            dd if=/bb/all.txt of="$CACHEDEV" bs=4096 seek=2048 conv=fsync 2>/dev/null
+        fi
     fi
-fi
-echo "BLACKBOX: written=$WRITTEN cache=$CACHEDEV" > /dev/console 2>/dev/null
+}
+write_cache
+echo "BLACKBOX v11: cache=$CACHEDEV first write done" > /dev/console 2>/dev/null
 
-# ===== 心跳循环: 每 5 秒重收集+重写(内核若中途挂死, cache 停在最后状态) =====
+# ===== 心跳循环: 每 5 秒重收集+重写+重绘(内核若中途挂死, cache 停在最后状态) =====
 i=0
 while [ $i -lt 12 ]; do
     sleep 5
     collect
-    if [ -n "$CACHEDEV" ]; then
-        if grep -q " /cache " /proc/mounts 2>/dev/null; then
-            cp /bb/all.txt /cache/blackbox/all.txt 2>/dev/null
-        else
-            mount -t ext4 "$CACHEDEV" /cache 2>/dev/null && {
-                cp /bb/all.txt /cache/blackbox/all.txt 2>/dev/null
-            }
-        fi
-        sync 2>/dev/null
-    fi
+    write_cache
+    # 状态页持续重绘(确保屏幕在显示驱动就绪后也能看到)
+    for fb in /dev/fb0 /dev/graphics/fb0; do
+        [ -e "$fb" ] && dd if=/etc/fb_linux.raw of="$fb" bs=4096 2>/dev/null
+    done
     i=$((i+1))
 done
 sync 2>/dev/null

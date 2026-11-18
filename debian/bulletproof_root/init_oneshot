@@ -1,5 +1,6 @@
 #!/bin/busybox sh
-# M463(魅蓝1/m79) v9.1 一次性方案 — /init 即 PID1 全流程
+# M463(魅蓝1/m79) v11 一次性 Debian 启动 — /init 即 PID1 全流程
+# v11: ① 补 /cache 挂载点(v10.2 实测教训) ② switch_root 前把诊断写入 cache ext4
 # 流程: ACM gadget(登录通道) → 状态页 → 找 userdata 的 Debian → PID1 exec switch_root
 # 兜底: 无 Debian → 救援页 + ttyGS0 shell
 # 本脚本作为 PID1 运行, switch_root 的 PID1 限制由此满足(此前 rcS 子进程调用会失败)
@@ -7,7 +8,7 @@
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 /bin/busybox --install -s /bin 2>/dev/null
 
-/bin/busybox mkdir -p /proc /sys /dev /tmp /newroot
+/bin/busybox mkdir -p /proc /sys /dev /tmp /newroot /bb /cache
 /bin/busybox mount -t proc proc /proc 2>/dev/null
 /bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || {
@@ -60,6 +61,38 @@ for ue in /sys/class/block/mmcblk0p*/uevent; do
 done
 # 兜底: scatter 实测 userdata 为 mmcblk0p20
 [ -n "$USERDEV" ] || { [ -b /dev/mmcblk0p20 ] && USERDEV=/dev/mmcblk0p20; }
+
+# ===== 诊断快照写入 cache ext4(switch_root 前的最后遗言) =====
+{
+    echo "=== M1 ONESHOT v11 ==="
+    echo "=== uptime ==="
+    cat /proc/uptime 2>/dev/null
+    echo "=== cmdline ==="
+    cat /proc/cmdline 2>/dev/null
+    echo "=== decision: USERDEV=$USERDEV ==="
+    echo "=== mmcblk0p uevents ==="
+    for ue in /sys/class/block/mmcblk0p*/uevent; do echo "-- ${ue##*/p}"; grep -E "PARTNAME" "$ue" 2>/dev/null; done
+    echo "=== END OF ONESHOT v11 ==="
+} > /bb/all.txt 2>/dev/null
+CACHEDEV=""
+for ue in /sys/class/block/mmcblk0p*/uevent; do
+    grep -q "PARTNAME=cache" "$ue" 2>/dev/null || continue
+    bn=${ue%/uevent}; bn=${bn##*/}
+    MAJ=$(grep -oE "MAJOR=[0-9]+" "$ue" | cut -d= -f2)
+    MIN=$(grep -oE "MINOR=[0-9]+" "$ue" | cut -d= -f2)
+    mknod "/dev/$bn" b "$MAJ" "$MIN" 2>/dev/null && CACHEDEV="/dev/$bn"
+    break
+done
+if [ -n "$CACHEDEV" ]; then
+    if mount -t ext4 "$CACHEDEV" /cache 2>/dev/null; then
+        mkdir -p /cache/blackbox 2>/dev/null
+        cp /bb/all.txt /cache/blackbox/oneshot.txt 2>/dev/null
+        sync 2>/dev/null
+        umount /cache 2>/dev/null
+    else
+        dd if=/bb/all.txt of="$CACHEDEV" bs=4096 seek=2048 conv=fsync 2>/dev/null
+    fi
+fi
 
 # ===== 挂载 Debian + PID1 exec switch_root =====
 if [ -n "$USERDEV" ] && mount -t ext4 "$USERDEV" /newroot 2>/dev/null && [ -e /newroot/sbin/init ]; then

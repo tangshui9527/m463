@@ -1,0 +1,230 @@
+#!/bin/busybox sh
+# M463(魅蓝1) v14 黑匣子+Debian(cmode修复+ECM+救援WiFi) — PID 1 全流程, 最大可见性版
+# v11 修复(v10.2 实测教训):
+#   ① 缺 /cache 挂载点 → ext4 mount 必败 → 只剩首写一次 (2026-11-18 cache 8MB 处实锤)
+#   ② 心跳循环只重试 mount, 无 dd 兜底 → 60 秒白跑
+#   ③ 状态页按 1280×768 BGRA 正确重绘, 心跳里持续重绘
+# 三通道同时验证: ① USB ACM root shell ② 手机屏幕状态页 ③ cache 分区数据
+# 上轮遗言: /proc/last_kmsg2 (MTK ram_console, panic 原文)
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+/bin/busybox --install -s /bin 2>/dev/null
+
+/bin/busybox mkdir -p /proc /sys /dev /tmp /bb /cache
+/bin/busybox mount -t proc proc /proc 2>/dev/null
+/bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
+/bin/busybox mount -t tmpfs tmpfs /dev 2>/dev/null
+/bin/busybox mdev -s 2>/dev/null
+
+# ===== 最早期可见信号: home 键背光闪烁(独立于屏幕的 LED 通道) =====
+# m79 配置的 LED 类名: button-backlight (mt65xx LED 驱动, 原厂内核二进制实锤)
+# 2 次清晰闪烁 = rcS 跑到了这里; 之后 ACM/屏幕/cache 各通道再各自表态
+LED=/sys/class/leds/button-backlight/brightness
+if [ -e "$LED" ]; then
+    echo 255 > "$LED" 2>/dev/null; echo 0 > "$LED" 2>/dev/null
+    echo 255 > "$LED" 2>/dev/null; echo 0 > "$LED" 2>/dev/null
+fi
+
+# ===== 通道① : USB ACM gadget 最先配置(最优先可见性) =====
+A=/sys/class/android_usb/android0
+if [ -d "$A" ]; then
+    echo 0 > "$A/enable" 2>/dev/null
+    echo 2a45 > "$A/idVendor" 2>/dev/null
+    echo 0006 > "$A/idProduct" 2>/dev/null
+    echo acm,ecm > "$A/functions" 2>/dev/null
+    echo 1 > /sys/devices/platform/mt_usb/cmode 2>/dev/null
+    echo 1 > "$A/enable" 2>/dev/null
+    for i in 0 1; do
+        [ -f "/sys/class/tty/ttyGS$i/dev" ] || continue
+        MM=$(cat "/sys/class/tty/ttyGS$i/dev" 2>/dev/null)
+        [ -n "$MM" ] && mknod -m 666 "/dev/ttyGS$i" c ${MM%%:*} ${MM##*:} 2>/dev/null
+    done
+    ( while true; do getty -L 115200 ttyGS0 vt100; sleep 1; done ) 2>/dev/null &
+fi
+
+# ===== 通道② : 手机屏幕状态页(1280×768 本机分辨率) =====
+mkdir -p /dev/graphics 2>/dev/null
+BL=/sys/class/leds/lcd-backlight/brightness
+echo 200 > "$BL" 2>/dev/null
+for fb in /dev/fb0 /dev/graphics/fb0; do
+    [ -e "$fb" ] || mknod "$fb" c 29 0 2>/dev/null
+    [ -e "$fb" ] && dd if=/etc/fb_linux.raw of="$fb" bs=4096 2>/dev/null
+done
+
+# ===== 收集: 上轮遗言(last_kmsg2) + 本轮全诊断 =====
+collect() {
+    {
+        echo "=== M1 BLACKBOX v14 ==="
+        echo "=== uptime ==="
+        cat /proc/uptime 2>/dev/null
+        echo "=== cmdline (LK 实传, 回答 Q5) ==="
+        cat /proc/cmdline 2>/dev/null
+        echo "=== version (编译器, 谜团B) ==="
+        cat /proc/version 2>/dev/null
+        echo "=== boot_mode ==="
+        cat /sys/class/BOOT/BOOT/boot/boot_mode 2>/dev/null
+        echo "=== eMMC CID ==="
+        cat /sys/block/mmcblk0/device/cid 2>/dev/null
+        echo "=== dmesg (本轮内核日志) ==="
+        dmesg 2>/dev/null
+        echo "=== last_kmsg2 (上轮遗言, panic 原文) ==="
+        cat /proc/last_kmsg2 2>/dev/null
+        echo "=== last_kmsg ==="
+        cat /proc/last_kmsg 2>/dev/null
+        echo "=== partitions ==="
+        cat /proc/partitions 2>/dev/null
+        echo "=== android_usb ==="
+        for f in /sys/class/android_usb/android0/*; do
+            echo "$(basename $f)=$(cat $f 2>/dev/null)"
+        done
+        echo "=== block PARTNAME 全表 ==="
+        for f in /sys/class/block/*/uevent; do
+            echo "-- ${f##*/}"; cat "$f" 2>/dev/null
+        done
+        echo "=== END OF BLACKBOX v14 ==="
+    } > /bb/all.txt 2>/dev/null
+}
+collect
+
+# ===== 通道③ : 写 cache(按 PARTNAME 找, ext4 文件优先, 裸写兜底) =====
+CACHEDEV=""
+for ue in /sys/class/block/mmcblk0p*/uevent; do
+    [ -f "$ue" ] || continue
+    grep -q "PARTNAME=cache" "$ue" 2>/dev/null || continue
+    bn=${ue%/uevent}
+    bn=${bn##*/}
+    MAJ=$(grep -oE "MAJOR=[0-9]+" "$ue" | cut -d= -f2)
+    MIN=$(grep -oE "MINOR=[0-9]+" "$ue" | cut -d= -f2)
+    if [ -n "$MAJ" ] && [ -n "$MIN" ]; then
+        mknod "/dev/$bn" b "$MAJ" "$MIN" 2>/dev/null
+        CACHEDEV="/dev/$bn"
+    fi
+    break
+done
+
+# ===== 写 cache: ext4 文件优先, 裸写 dd 兜底(v11: 首写与心跳统一走本函数) =====
+write_cache() {
+    if [ -n "$CACHEDEV" ]; then
+        if mount -t ext4 "$CACHEDEV" /cache 2>/dev/null; then
+            mkdir -p /cache/blackbox 2>/dev/null
+            cp /bb/all.txt /cache/blackbox/all.txt 2>/dev/null
+            sync 2>/dev/null
+            umount /cache 2>/dev/null
+        else
+            dd if=/bb/all.txt of="$CACHEDEV" bs=4096 seek=2048 conv=fsync 2>/dev/null
+        fi
+    fi
+}
+write_cache
+echo "BLACKBOX v11: cache=$CACHEDEV first write done" > /dev/console 2>/dev/null
+
+# ===== 心跳循环: 每 5 秒重收集+重写+重绘(内核若中途挂死, cache 停在最后状态) =====
+USBKICK() {
+    A2=/sys/class/android_usb/android0
+    [ -d "$A2" ] || return
+    echo 1 > /sys/devices/platform/mt_usb/cmode 2>/dev/null
+    ST=$(cat "$A2/state" 2>/dev/null)
+    if [ "$ST" != "CONFIGURED" ]; then
+        echo 0 > "$A2/enable" 2>/dev/null
+        sleep 1
+        echo acm,ecm > "$A2/functions" 2>/dev/null
+        echo 1 > "$A2/enable" 2>/dev/null
+    fi
+}
+i=0
+while [ $i -lt 12 ]; do
+    sleep 5
+    collect
+    write_cache
+    USBKICK
+    # 状态页持续重绘(确保屏幕在显示驱动就绪后也能看到)
+    for fb in /dev/fb0 /dev/graphics/fb0; do
+        [ -e "$fb" ] && dd if=/etc/fb_linux.raw of="$fb" bs=4096 2>/dev/null
+    done
+    i=$((i+1))
+done
+sync 2>/dev/null
+umount /cache 2>/dev/null
+
+# ===== v12: 黑匣子完成后切换进 Debian(替代关机) =====
+BL=/sys/class/leds/lcd-backlight/brightness
+USERDEV=""
+for ue in /sys/class/block/mmcblk0p*/uevent; do
+    grep -q "PARTNAME=userdata" "$ue" 2>/dev/null || continue
+    bn=${ue%/uevent}; bn=${bn##*/}
+    MAJ=$(grep -oE "MAJOR=[0-9]+" "$ue" | cut -d= -f2)
+    MIN=$(grep -oE "MINOR=[0-9]+" "$ue" | cut -d= -f2)
+    mknod "/dev/$bn" b "$MAJ" "$MIN" 2>/dev/null
+    USERDEV="/dev/$bn"
+    break
+done
+[ -n "$USERDEV" ] || { [ -b /dev/mmcblk0p20 ] && USERDEV=/dev/mmcblk0p20; }
+
+# 常驻 USB 守护进程: 检测插线未枚举即重触发(跨 switch_root 存活)
+(
+    while true; do
+        sleep 3
+        A2=/sys/class/android_usb/android0
+        [ -d "$A2" ] || continue
+        ST=$(cat "$A2/state" 2>/dev/null)
+        echo 1 > /sys/devices/platform/mt_usb/cmode 2>/dev/null
+        if [ "$ST" != "CONFIGURED" ] && [ -e /sys/class/android_usb/android0/enable ]; then
+            echo 0 > "$A2/enable" 2>/dev/null
+            sleep 1
+            echo acm,ecm > "$A2/functions" 2>/dev/null
+            echo 1 > "$A2/enable" 2>/dev/null
+        fi
+    done
+) < /dev/null > /dev/null 2>&1 &
+
+if [ -n "$USERDEV" ] && mount -t ext4 "$USERDEV" /newroot 2>/dev/null && [ -e /newroot/sbin/init ]; then
+    echo "M1 v14: switching to Debian on $USERDEV" > /dev/console 2>/dev/null
+    mkdir -p /newroot 2>/dev/null
+    mount -o remount,rw /newroot 2>/dev/null
+    mount --move /proc /newroot/proc 2>/dev/null
+    mount --move /sys /newroot/sys 2>/dev/null
+    mount --move /dev /newroot/dev 2>/dev/null
+    exec switch_root /newroot /sbin/init
+fi
+
+# ===== 兜底: 无 Debian → 救援页 + ttyGS0 shell(不关机, 等插线登录) =====
+echo "M1 v14: no Debian on $USERDEV, rescue+wifi" > /dev/console 2>/dev/null
+for fb in /dev/fb0 /dev/graphics/fb0; do
+    [ -e "$fb" ] && dd if=/etc/fb_rescue.raw of="$fb" bs=4096 2>/dev/null
+done
+echo 255 > "$BL" 2>/dev/null
+# 救援 WiFi: 原厂 system 提供 wmt_loader, rootfs 提供 wpa_supplicant/dropbear
+(
+    /bin/busybox mkdir -p /system
+    SYSD=""
+    for ue in /sys/class/block/mmcblk0p*/uevent; do
+        grep -q "PARTNAME=system" "$ue" 2>/dev/null || continue
+        bn2=${ue%/uevent}; bn2=${bn2##*/}
+        MA2=$(grep -oE "MAJOR=[0-9]+" "$ue" | cut -d= -f2)
+        MI2=$(grep -oE "MINOR=[0-9]+" "$ue" | cut -d= -f2)
+        /bin/busybox mknod "/dev/$bn2" b "$MA2" "$MI2" 2>/dev/null && SYSD="/dev/$bn2"
+        break
+    done
+    [ -n "$SYSD" ] && mount -t ext4 -o ro "$SYSD" /system 2>/dev/null
+    /bin/busybox mknod /dev/wmtWifi c 153 0 2>/dev/null
+    /bin/busybox mknod /dev/wmt_detect c 154 0 2>/dev/null
+    /bin/busybox mknod /dev/log/main c 10 56 2>/dev/null
+    if [ -x /system/bin/wmt_loader ]; then
+        ( LD_LIBRARY_PATH=/system/lib /system/bin/linker /system/bin/wmt_loader \
+            </dev/null >/tmp/wmt.log 2>&1 & )
+        sleep 10
+    fi
+    echo 1 > /dev/wmtWifi 2>/dev/null
+    if mount -t ext4 /dev/mmcblk0p19 /newroot 2>/dev/null || [ -d /newroot/usr ]; then
+        mount -o bind /proc /newroot/proc 2>/dev/null
+        mount -o bind /sys /newroot/sys 2>/dev/null
+        mount -o bind /dev /newroot/dev 2>/dev/null
+        chroot /newroot /usr/local/sbin/wifi-up </dev/null >/tmp/wifi.log 2>&1 &
+        sleep 25
+        chroot /newroot /usr/sbin/dropbear -p 22 -P /run/dropbear.pid </dev/null >/tmp/dropbear.log 2>&1 &
+    fi
+) </dev/null >/dev/null 2>&1 &
+while true; do
+    sh < /dev/ttyGS0 > /dev/ttyGS0 2>&1
+    sleep 1
+done

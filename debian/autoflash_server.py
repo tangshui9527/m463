@@ -21,6 +21,11 @@ SUBSCRIBERS = set()
 LOCK = threading.Lock()
 
 TARGETS = {
+    "rc_peek": {
+        "name": "📋 读取 ram_console 64KB (BROM/preloader, 挂死前日志)",
+        "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S timeout 120 python3 -u mtk.py da peek 0x43F00000 0x10000 --filename /tmp/rc_hang.img 2>&1 | tail -2',
+        "desc": "只读操作: 读取 0x43F00000 的 64KB 内核日志缓冲区(热复位保留), 挂死前日志在内"
+    },
     "flash_boot_oneshot": {
         "name": "🚀 刷入一次性 boot (Debian 直接启动版, 约1秒)",
         "cmd": 'cd ~/mtkclient && echo 1122 | sudo -S python3 -u mtk.py multi "w boot boot-linux-oneshot.img;reset"',
